@@ -391,7 +391,7 @@ function WelcomeView({ profile, setProfile, onCreate, onJoin, loading }) {
           className="w-full py-4 rounded-2xl font-bold text-white bg-[#88d8c0] shadow-[0_8px_0_0_#5eb89e] active:shadow-[0_0px_0_0_#5eb89e] active:translate-y-2 transition-all flex justify-center items-center gap-2"
         >
           <Plus size={20} />
-          建立新房間
+          🏡建立新房間
         </button>
 
         <div className="flex items-center space-x-2 mt-6">
