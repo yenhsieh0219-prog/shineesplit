@@ -339,7 +339,7 @@ function SettleUpView({ roomData, expenses, onBack, currentUser }) {
               <div className="text-sm font-bold text-gray-600">{roomData.users[s.from]?.name}</div>
             </div>
             <div className="flex flex-col items-center px-4 flex-1">
-              <span className="text-[10px] font-bold text-[#88d8c0] mb-1 uppercase">應支付給</span>
+              <span className="text-[14px] font-bold text-[#88d8c0] mb-1 uppercase">應支付給</span>
               <div className="flex items-center text-[#ff9a8b]">
                 <MoveRight size={24} strokeWidth={3} />
                 <span className="text-lg font-black ml-2">${s.amount.toLocaleString()}</span>
