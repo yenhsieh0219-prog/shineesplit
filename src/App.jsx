@@ -840,24 +840,30 @@ function SettleUpView({ roomData, expenses, onBack, currentUser }) {
           <Gem size={18} className="text-[#88d8c0]" />
           最佳還款方案
         </h3>
-        <div className="space-y-4">
-            {settlements.map((tx, idx) => (
-              <div key={idx} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-50 flex items-center justify-between">
-                <div className="text-center flex-1">
-                  <p className="text-2xl mb-1">{roomData.users[tx.from]?.avatar}</p>
-                  <p className="text-sm font-bold truncate">{tx.from === currentUser.uid ? '我' : roomData.users[tx.from]?.name}</p>
-                </div>
-                <div className="flex-1 text-center">
-                  <ArrowRightLeft size={16} className="mx-auto text-gray-300" />
-                  <p className="font-black text-[#f4a28c]">${tx.amount}</p>
-                </div>
-                <div className="text-center flex-1">
-                  <p className="text-2xl mb-1">{roomData.users[tx.to]?.avatar}</p>
-                  <p className="text-sm font-bold truncate">{tx.to === currentUser.uid ? '我' : roomData.users[tx.to]?.name}</p>
-                </div>
-              </div>
-            ))}
-        </div>
+        <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-50 flex items-center justify-between">
+  {/* 付款方 (例如：HY H) */}
+  <div className="flex flex-col items-center flex-1">
+    <div className="text-3xl mb-1">{memberIcons[s.from] || '👤'}</div>
+    <div className="text-sm font-bold text-gray-600">{s.from}</div>
+  </div>
+
+  {/* 中間的引導區塊：改為單向箭頭與文字 */}
+  <div className="flex flex-col items-center px-4 flex-1">
+    <span className="text-[10px] font-bold text-[#88d8c0] mb-1 tracking-widest uppercase">
+      應支付給
+    </span>
+    <div className="flex items-center text-[#ff9a8b]">
+      <MoveRight size={24} strokeWidth={3} />
+      <span className="text-lg font-black ml-2">${s.amount.toLocaleString()}</span>
+    </div>
+  </div>
+
+  {/* 受款方 (例如：我) */}
+  <div className="flex flex-col items-center flex-1">
+    <div className="text-3xl mb-1">{memberIcons[s.to] || '👤'}</div>
+    <div className="text-sm font-bold text-gray-600">{s.to}</div>
+  </div>
+</div>
       </div>
     </div>
   );
