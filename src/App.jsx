@@ -249,7 +249,7 @@ export default function App() {
           <div className="flex items-center space-x-2">
             <Gem className="text-[#88d8c0]" size={28} />
             <h1 className="font-bold text-xl text-gray-700 tracking-wide">
-              {roomId ? '閃耀出遊中 ✨' : '閃閃記帳'}
+              {roomId ? '閃閃一起玩 ✨' : '閃閃記帳'}
             </h1>
           </div>
           <button onClick={logout} className="p-2 text-gray-400 hover:text-red-400 transition-colors">
