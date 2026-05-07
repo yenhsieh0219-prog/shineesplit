@@ -1,3 +1,5 @@
+console.log("💎 閃閃記帳正在運行新版本 💎");
+
 import React, { useState, useEffect, useMemo } from 'react';
 import {
   Gem, 
@@ -31,9 +33,7 @@ import {
   onSnapshot,
   addDoc,
   updateDoc,
-  deleteDoc,
-  arrayUnion,
-  arrayRemove
+  deleteDoc
 } from 'firebase/firestore';
 
 // --- Firebase Initialization ---
@@ -123,12 +123,17 @@ export default function App() {
     setCurrentView('welcome');
   };
 
+  // 💎 修正：100% 穩健的歷史紀錄更新法
   const updateHistory = async (id, name) => {
     const userRef = doc(db, 'users', user.uid);
-    const newEntry = { id, name, lastAccess: Date.now() };
-    const existing = roomHistory.find(r => r.id === id);
-    if (existing) await updateDoc(userRef, { history: arrayRemove(existing) });
-    await setDoc(userRef, { history: arrayUnion(newEntry) }, { merge: true });
+    const userSnap = await getDoc(userRef);
+    let currentHistory = userSnap.exists() ? (userSnap.data().history || []) : [];
+    
+    // 用 ID 強制過濾掉舊的，再把新的塞進去
+    currentHistory = currentHistory.filter(r => r.id !== id);
+    currentHistory.push({ id, name, lastAccess: Date.now() });
+    
+    await setDoc(userRef, { history: currentHistory }, { merge: true });
   };
 
   const createRoom = async (roomName) => {
@@ -163,20 +168,37 @@ export default function App() {
         await updateHistory(targetId, data.name);
         setRoomId(targetId);
         setCurrentView('room');
-      } else { showToast("找不到此房間", "error"); }
+      } else { 
+        showToast("房間已失效，為您清除紀錄 🧹", "error"); 
+        // 💎 修正：自動清道夫，把無效的房間從歷史紀錄砍掉
+        const userRef = doc(db, 'users', user.uid);
+        const userSnap = await getDoc(userRef);
+        if (userSnap.exists()) {
+          const currentHistory = userSnap.data().history || [];
+          const updatedHistory = currentHistory.filter(r => r.id !== targetId);
+          await updateDoc(userRef, { history: updatedHistory });
+        }
+      }
     } catch (e) { showToast("加入失敗", "error"); }
     setLoading(false);
   };
 
+  // 💎 修正：穩健的刪除連動機制
   const softDeleteRoom = async (targetId) => {
     if (!window.confirm("確定要刪除這間房嗎？")) return;
     try {
+      // 1. 標記房間為刪除
       await updateDoc(doc(db, 'rooms', targetId), { isDeleted: true });
+      
+      // 2. 精準地從使用者的歷史紀錄中拔除
       const userRef = doc(db, 'users', user.uid);
-      const entryToRemove = roomHistory.find(r => r.id === targetId);
-      if (entryToRemove) {
-        await updateDoc(userRef, { history: arrayRemove(entryToRemove) });
+      const userSnap = await getDoc(userRef);
+      if (userSnap.exists()) {
+        const currentHistory = userSnap.data().history || [];
+        const updatedHistory = currentHistory.filter(r => r.id !== targetId);
+        await updateDoc(userRef, { history: updatedHistory });
       }
+      
       showToast("已成功刪除");
       leaveRoom();
     } catch (e) { showToast("操作失敗", "error"); }
@@ -568,7 +590,6 @@ function SettleUpView({ roomData, expenses, onBack, currentUser }) {
     <div className="p-5 space-y-6 animate-in slide-in-from-left-8 overflow-y-auto">
       <div className="flex items-center"><button onClick={onBack} className="p-1"><ChevronLeft size={24}/></button><h2 className="text-xl font-black ml-1">結算帳務</h2></div>
       
-      {/* 修正：優化結算狀態的文案 */}
       <div className={`p-6 rounded-[32px] text-white shadow-lg ${myBal >= 0 ? 'bg-[#88d8c0]' : 'bg-[#f4a28c]'}`}>
         <p className="text-[10px] uppercase opacity-70 tracking-widest">My Status</p>
         <div className="text-3xl font-black mt-1">{myBal > 0 ? '+' : ''}{Math.round(myBal)} 元</div>
