@@ -4,14 +4,15 @@ import {
   AlertCircle, 
   LogOut, 
   Calculator, 
-  FileSpreadsheet, 
   MoveRight, 
   Copy, 
-  Check, 
   CheckCircle2,
   ArrowRightLeft,
   ChevronLeft,
-  Plus
+  Plus,
+  Trash2,
+  Clock,
+  Pencil
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import {
@@ -29,7 +30,10 @@ import {
   getDoc,
   onSnapshot,
   addDoc,
-  updateDoc
+  updateDoc,
+  deleteDoc,
+  arrayUnion,
+  arrayRemove
 } from 'firebase/firestore';
 
 // --- Firebase Initialization ---
@@ -46,15 +50,10 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-const appId = 'shinee-split-trip';
-
 const AVATARS = [
-  { icon: '🐰', name: '斤古王 (Onew)' },
-  { icon: '🐶', name: '鐘狗 (Jonghyun)' },
-  { icon: '🐹', name: '福實 (Key)' },
-  { icon: '🐿️', name: '達拉珉 (Minho)' },
-  { icon: '🐥', name: '泰麻里 (Taemin)' },
-  { icon: '💎', name: '閃窩' },
+  { icon: '🐰', name: '斤古王' }, { icon: '🐶', name: '鐘狗' },
+  { icon: '🐹', name: '福實' }, { icon: '🐿️', name: '達拉珉' },
+  { icon: '🐥', name: '泰麻里' }, { icon: '💎', name: '閃窩' },
 ];
 
 export default function App() {
@@ -66,57 +65,50 @@ export default function App() {
   const [expenses, setExpenses] = useState([]);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState(null);
+  const [roomHistory, setRoomHistory] = useState([]);
+  const [editingExpense, setEditingExpense] = useState(null);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
-      if (currentUser && currentUser.displayName && !profile.name) {
-        setProfile(prev => ({ ...prev, name: currentUser.displayName }));
+      if (currentUser) {
+        const userRef = doc(db, 'users', currentUser.uid);
+        const unsubHistory = onSnapshot(userRef, (docSnap) => {
+          if (docSnap.exists()) setRoomHistory(docSnap.data().history || []);
+        });
+        if (currentUser.displayName && !profile.name) {
+          setProfile(prev => ({ ...prev, name: currentUser.displayName }));
+        }
+        setLoading(false);
+        return () => unsubHistory();
       }
       setLoading(false);
     });
     return () => unsubscribe();
   }, []);
 
-  const loginWithGoogle = async () => {
-    setLoading(true);
-    const provider = new GoogleAuthProvider();
-    try {
-      await signInWithPopup(auth, provider);
-      showToast("登入成功！✨");
-    } catch (err) {
-      showToast("Google 登入失敗", "error");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const logout = () => {
-    signOut(auth);
-    setRoomId(null);
-    setCurrentView('welcome');
-  };
-
   useEffect(() => {
     if (!user || !roomId) return;
-    const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId);
-    const unsubscribeRoom = onSnapshot(roomRef, (snapshot) => {
+    const roomRef = doc(db, 'rooms', roomId);
+    const unsubRoom = onSnapshot(roomRef, (snapshot) => {
       if (snapshot.exists()) {
-        setRoomData(snapshot.data());
+        const data = snapshot.data();
+        if (data.isDeleted) {
+          showToast("此房間已被關閉", "error");
+          leaveRoom();
+        } else {
+          setRoomData(data);
+        }
       }
     });
 
-    const expensesRef = collection(db, 'artifacts', appId, 'public', 'data', 'rooms', roomId, 'expenses');
-    const unsubscribeExpenses = onSnapshot(expensesRef, (snapshot) => {
-      const expList = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-      expList.sort((a, b) => b.createdAt - a.createdAt);
-      setExpenses(expList);
+    const expRef = collection(db, 'rooms', roomId, 'expenses');
+    const unsubExp = onSnapshot(expRef, (snapshot) => {
+      const list = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      setExpenses(list.sort((a, b) => b.createdAt - a.createdAt));
     });
 
-    return () => {
-      unsubscribeRoom();
-      unsubscribeExpenses();
-    };
+    return () => { unsubRoom(); unsubExp(); };
   }, [user, roomId]);
 
   const showToast = (message, type = 'success') => {
@@ -124,233 +116,500 @@ export default function App() {
     setTimeout(() => setToast(null), 3000);
   };
 
-  const createRoom = async () => {
-    if (!profile.name.trim()) return showToast("請輸入暱稱", "error");
+  const leaveRoom = () => {
+    setRoomId(null);
+    setRoomData(null);
+    setExpenses([]);
+    setCurrentView('welcome');
+  };
+
+  const updateHistory = async (id, name) => {
+    const userRef = doc(db, 'users', user.uid);
+    const newEntry = { id, name, lastAccess: Date.now() };
+    const existing = roomHistory.find(r => r.id === id);
+    if (existing) await updateDoc(userRef, { history: arrayRemove(existing) });
+    await setDoc(userRef, { history: arrayUnion(newEntry) }, { merge: true });
+  };
+
+  const createRoom = async (roomName) => {
+    if (!profile.name.trim() || !roomName.trim()) return showToast("請完整填寫喔", "error");
     setLoading(true);
     try {
-      const newRoomId = Math.random().toString(36).substring(2, 8).toUpperCase();
-      const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', newRoomId);
+      const newId = Math.random().toString(36).substring(2, 8).toUpperCase();
+      const roomRef = doc(db, 'rooms', newId);
       await setDoc(roomRef, {
-        id: newRoomId,
-        createdAt: Date.now(),
+        id: newId, name: roomName, ownerId: user.uid, isDeleted: false, createdAt: Date.now(),
         users: { [user.uid]: { uid: user.uid, name: profile.name, avatar: profile.avatar } }
       });
-      setRoomId(newRoomId);
+      await updateHistory(newId, roomName);
+      setRoomId(newId);
       setCurrentView('room');
-    } catch (err) {
-      showToast("建立失敗", "error");
-    }
+      showToast("房間建立成功！✨");
+    } catch (e) { showToast("建立失敗", "error"); }
     setLoading(false);
   };
 
   const joinRoom = async (inputRoomId) => {
-    if (!profile.name.trim()) return showToast("請輸入暱稱", "error");
     const targetId = inputRoomId.trim().toUpperCase();
-    if (!targetId) return showToast("請輸入房間代碼", "error");
-    
+    if (!profile.name.trim() || !targetId) return showToast("請輸入暱稱與房號", "error");
     setLoading(true);
     try {
-      const roomRef = doc(db, 'artifacts', appId, 'public', 'data', 'rooms', targetId);
-      const roomSnap = await getDoc(roomRef);
-      if (roomSnap.exists()) {
-        const data = roomSnap.data();
+      const roomRef = doc(db, 'rooms', targetId);
+      const snap = await getDoc(roomRef);
+      if (snap.exists() && !snap.data().isDeleted) {
+        const data = snap.data();
         const updatedUsers = { ...data.users, [user.uid]: { uid: user.uid, name: profile.name, avatar: profile.avatar } };
         await updateDoc(roomRef, { users: updatedUsers });
+        await updateHistory(targetId, data.name);
         setRoomId(targetId);
         setCurrentView('room');
-      } else {
-        showToast("找不到房間", "error");
-      }
-    } catch (err) {
-      showToast("加入失敗", "error");
-    }
+      } else { showToast("找不到此房間", "error"); }
+    } catch (e) { showToast("加入失敗", "error"); }
     setLoading(false);
   };
 
-  if (loading && !user) return <div className="min-h-screen flex items-center justify-center bg-[#f0f9f6] text-[#88d8c0]"><Gem size={48} className="animate-spin" /></div>;
-  if (!user) return <LoginView onLogin={loginWithGoogle} />;
+  const softDeleteRoom = async (targetId) => {
+    if (!window.confirm("確定要刪除這間房嗎？")) return;
+    try {
+      await updateDoc(doc(db, 'rooms', targetId), { isDeleted: true });
+      const userRef = doc(db, 'users', user.uid);
+      const entryToRemove = roomHistory.find(r => r.id === targetId);
+      if (entryToRemove) {
+        await updateDoc(userRef, { history: arrayRemove(entryToRemove) });
+      }
+      showToast("已成功刪除");
+      leaveRoom();
+    } catch (e) { showToast("操作失敗", "error"); }
+  };
+
+  const deleteExpense = async (expenseId) => {
+    if (!window.confirm("確定要刪除這筆帳單嗎？刪除後無法復原喔！")) return;
+    try {
+      await deleteDoc(doc(db, 'rooms', roomId, 'expenses', expenseId));
+      showToast("帳單已刪除 🗑️");
+    } catch (e) {
+      showToast("刪除失敗", "error");
+    }
+  };
+
+  if (loading && !user) return <div className="h-[100dvh] flex items-center justify-center bg-[#f0f9f6] text-[#88d8c0]"><Gem size={48} className="animate-spin" /></div>;
+  if (!user) return <LoginView onLogin={() => signInWithPopup(auth, new GoogleAuthProvider())} />;
 
   return (
-    <div className="min-h-screen bg-[#f0f9f6] text-gray-800 font-sans">
+    <div className="h-[100dvh] flex flex-col bg-[#f0f9f6] text-gray-800 font-sans overflow-hidden">
       {toast && (
-        <div className={`fixed top-4 left-1/2 transform -translate-x-1/2 z-50 flex items-center px-4 py-3 rounded-full shadow-lg ${toast.type === 'error' ? 'bg-red-100 text-red-600' : 'bg-white text-[#4eb094]'}`}>
-          {toast.type === 'error' ? <AlertCircle size={20} className="mr-2" /> : <CheckCircle2 size={20} className="mr-2 text-[#88d8c0]" />}
-          <span className="font-medium">{toast.message}</span>
+        <div className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 px-6 py-2 rounded-full shadow-lg ${toast.type === 'error' ? 'bg-red-500 text-white' : 'bg-[#4eb094] text-white'}`}>
+          {toast.message}
         </div>
       )}
-
-      <header className="bg-white shadow-sm sticky top-0 z-40">
-        <div className="max-w-md mx-auto px-4 h-16 flex items-center justify-between">
+      
+      <header className="bg-white/90 backdrop-blur-md shadow-sm h-14 flex-shrink-0">
+        <div className="max-w-md mx-auto px-4 h-full flex items-center justify-between">
           <div className="flex items-center space-x-2">
-            <Gem className="text-[#88d8c0]" size={28} />
-            <h1 className="font-bold text-xl text-gray-700">{roomId ? '閃閃一起玩 ✨' : '閃閃記帳'}</h1>
+            <Gem className="text-[#88d8c0]" size={22} />
+            <h1 className="font-bold text-base truncate max-w-[150px]">{roomId ? roomData?.name : '閃閃一起玩'}</h1>
           </div>
-          <button onClick={logout} className="p-2 text-gray-400 hover:text-red-400"><LogOut size={20} /></button>
+          <div className="flex gap-1">
+            {roomId ? (
+              <>
+                <button onClick={() => softDeleteRoom(roomId)} className="p-2 text-gray-300 hover:text-red-400">
+                  <Trash2 size={18}/>
+                </button>
+                <button onClick={leaveRoom} className="p-2 text-gray-300 hover:text-[#88d8c0]">
+                  <ChevronLeft size={24} />
+                </button>
+              </>
+            ) : (
+              <button onClick={() => signOut(auth)} className="p-2 text-gray-300 hover:text-gray-600">
+                <LogOut size={18}/>
+              </button>
+            )}
+          </div>
         </div>
       </header>
 
-      <main className="max-w-md mx-auto pb-24">
-        {currentView === 'welcome' && <WelcomeView profile={profile} setProfile={setProfile} onCreate={createRoom} onJoin={joinRoom} loading={loading} />}
-        {currentView === 'room' && roomData && <RoomDashboard roomId={roomId} roomData={roomData} expenses={expenses} onAdd={() => setCurrentView('add_expense')} onSettle={() => setCurrentView('settle')} currentUser={user} showToast={showToast} />}
-        {currentView === 'add_expense' && roomData && <AddExpenseView roomData={roomData} currentUser={user} onCancel={() => setCurrentView('room')} onSave={() => setCurrentView('room')} showToast={showToast} />}
+      <main className="flex-1 max-w-md mx-auto w-full overflow-y-auto overflow-x-hidden relative">
+        {currentView === 'welcome' && <WelcomeView profile={profile} setProfile={setProfile} onCreate={createRoom} onJoin={joinRoom} history={roomHistory} loading={loading} />}
+        
+        {currentView === 'room' && roomData && (
+          <RoomDashboard 
+            roomId={roomId} 
+            roomData={roomData} 
+            expenses={expenses} 
+            onAdd={() => {
+              setEditingExpense(null);
+              setCurrentView('add_expense');
+            }} 
+            onEdit={(exp) => {
+              setEditingExpense(exp);
+              setCurrentView('add_expense');
+            }}
+            onDelete={deleteExpense}
+            onSettle={() => setCurrentView('settle')} 
+            currentUser={user} 
+            showToast={showToast} 
+          />
+        )}
+
+        {currentView === 'add_expense' && roomData && (
+          <AddExpenseView 
+            roomData={roomData} 
+            currentUser={user} 
+            editingExpense={editingExpense} 
+            onCancel={() => setCurrentView('room')} 
+            onSave={() => setCurrentView('room')} 
+            showToast={showToast} 
+          />
+        )}
+
         {currentView === 'settle' && roomData && <SettleUpView roomData={roomData} expenses={expenses} onBack={() => setCurrentView('room')} currentUser={user} />}
       </main>
     </div>
   );
 }
 
-function LoginView({ onLogin }) {
+function WelcomeView({ profile, setProfile, onCreate, onJoin, history, loading }) {
+  const [roomName, setRoomName] = useState('');
+  const [joinId, setJoinId] = useState('');
+  
   return (
-    <div className="min-h-screen bg-[#f0f9f6] flex flex-col items-center justify-center p-6">
-      <div className="max-w-sm w-full bg-white p-10 rounded-[40px] shadow-xl text-center space-y-8">
-        <div className="flex justify-center"><div className="w-24 h-24 bg-[#88d8c0] rounded-3xl flex items-center justify-center shadow-lg"><Gem size={48} className="text-white" /></div></div>
-        <div className="space-y-2"><h1 className="text-3xl font-black text-gray-800">閃閃記帳</h1><p className="text-gray-500 font-medium">旅遊分帳，資料同步不遺失！</p></div>
-        <button onClick={onLogin} className="w-full py-4 rounded-2xl font-bold text-gray-700 bg-white border-2 border-gray-100 shadow-sm hover:bg-gray-50 transition-all flex justify-center items-center gap-3">
-          <svg className="w-6 h-6" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" /><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" /><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" /><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" /></svg>
-          Google 帳號快速登入
+    <div className="h-full p-5 flex flex-col justify-center gap-5 animate-in fade-in duration-500">
+      <div className="text-center space-y-3">
+        <div className="inline-flex items-center justify-center w-20 h-20 rounded-full bg-white shadow-xl text-4xl border-4 border-[#88d8c0]">{profile.avatar}</div>
+        <input type="text" value={profile.name} onChange={e => setProfile({...profile, name: e.target.value})} className="text-center font-black text-xl bg-transparent border-b-2 border-dashed border-gray-200 outline-none focus:border-[#88d8c0] w-full" />
+      </div>
+
+      <div className="bg-white p-5 rounded-[28px] shadow-sm border border-gray-50 space-y-4">
+        <p className="font-bold text-gray-700 text-xs px-1">建立新的分帳房</p>
+        <input type="text" placeholder="輸入旅遊名稱" value={roomName} onChange={e => setRoomName(e.target.value)} className="w-full px-4 py-3 rounded-xl bg-gray-50 outline-none focus:ring-2 focus:ring-[#88d8c0] text-sm" />
+        <div className="grid grid-cols-6 gap-1.5">
+          {AVATARS.map(av => (
+            <button key={av.icon} onClick={() => setProfile({...profile, avatar: av.icon})} className={`aspect-square rounded-lg flex items-center justify-center text-xl transition-all ${profile.avatar === av.icon ? 'bg-[#88d8c0] scale-90' : 'bg-gray-50'}`}>{av.icon}</button>
+          ))}
+        </div>
+        <button onClick={() => onCreate(roomName)} disabled={loading} className="w-full py-4 bg-[#88d8c0] text-white rounded-2xl font-bold shadow-[0_6px_0_0_#5eb89e] active:translate-y-[6px] active:shadow-none transition-all text-sm">開始記帳</button>
+      </div>
+
+      <div className="flex gap-2">
+        <input type="text" placeholder="輸入房號加入" value={joinId} onChange={e => setJoinId(e.target.value.toUpperCase())} className="flex-1 px-4 py-3.5 rounded-xl bg-white border border-gray-100 outline-none text-center font-mono tracking-widest font-bold text-sm" />
+        <button onClick={() => onJoin(joinId)} className="px-6 bg-[#88d8c0] text-white rounded-xl font-bold shadow-[0_6px_0_0_#5eb89e] active:translate-y-[5px] active:shadow-none transition-all text-sm">加入</button>
+      </div>
+
+      {history.length > 0 && (
+        <div className="space-y-2">
+          <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest px-1 flex items-center gap-1"><Clock size={12}/> 最近紀錄</p>
+          <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
+            {history.sort((a,b)=>b.lastAccess - a.lastAccess).slice(0,5).map(r => (
+              <button key={r.id} onClick={() => onJoin(r.id)} className="flex-shrink-0 bg-white px-4 py-2 rounded-full shadow-sm border border-gray-50 text-xs font-bold text-gray-600 hover:border-[#88d8c0]">
+                {r.name}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RoomDashboard({ roomId, roomData, expenses, onAdd, onEdit, onDelete, onSettle, currentUser, showToast }) {
+  const usersArray = Object.values(roomData.users || {});
+  const myTotal = expenses.filter(e => e.payerId === currentUser.uid).reduce((sum, e) => sum + Number(e.amount), 0);
+  
+  const copyId = () => { 
+    navigator.clipboard.writeText(roomId); 
+    showToast("房號已複製！💎"); 
+  };
+
+  return (
+    <div className="p-4 space-y-5 animate-in fade-in duration-500">
+      <div className="bg-gradient-to-br from-[#88d8c0] to-[#72c9b0] p-5 rounded-[28px] text-white shadow-xl flex justify-between items-center relative overflow-hidden">
+        <div className="space-y-2 relative z-10">
+          <p className="text-[9px] font-black uppercase opacity-70 tracking-tighter font-mono">Room Code</p>
+          <div className="flex items-center gap-2 cursor-pointer group" onClick={copyId}>
+            <h2 className="text-4xl font-black tracking-widest drop-shadow-md group-hover:scale-105 transition-transform">{roomId}</h2>
+            <Copy size={16} className="opacity-50 group-hover:opacity-100" />
+          </div>
+          <div className="flex -space-x-1.5 pt-2">{usersArray.map(u => <div key={u.uid} className="w-7 h-7 rounded-full bg-white/20 border-2 border-[#88d8c0] flex items-center justify-center text-xs">{u.avatar}</div>)}</div>
+        </div>
+        <div className="text-right relative z-10"><p className="text-[10px] opacity-80 font-bold">我付出的總額</p><p className="text-3xl font-black">${myTotal.toLocaleString()}</p></div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <button onClick={onAdd} className="bg-white p-5 rounded-[24px] shadow-sm flex flex-col items-center gap-3 active:scale-95 transition-all"><div className="w-10 h-10 rounded-full bg-[#e6f7f2] flex items-center justify-center"><Plus className="text-[#4eb094]" size={20} strokeWidth={3} /></div><b className="text-sm">記一筆</b></button>
+        <button onClick={onSettle} className="bg-white p-5 rounded-[24px] shadow-sm flex flex-col items-center gap-3 active:scale-95 transition-all"><div className="w-10 h-10 rounded-full bg-[#fff0ed] flex items-center justify-center"><Calculator className="text-[#f48c71]" size={20} strokeWidth={3} /></div><b className="text-sm">去結算</b></button>
+      </div>
+
+      <div className="space-y-2.5">
+        <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest px-1">帳單明細</p>
+        {expenses.length === 0 ? (
+          <div className="py-10 text-center text-gray-300 font-bold border-2 border-dashed border-gray-100 rounded-[28px] text-sm">還沒有任何紀錄喔</div>
+        ) : (
+          <div className="space-y-2.5">
+            {expenses.map(exp => (
+              <div key={exp.id} className="bg-white p-3.5 rounded-xl flex items-center justify-between shadow-sm border border-gray-50">
+                <div className="flex items-center gap-3 text-lg">
+                  {roomData.users[exp.payerId]?.avatar}
+                  <div>
+                    <p className="font-bold text-sm text-gray-800">{exp.title}</p>
+                    <p className="text-[9px] text-gray-400 font-bold uppercase">{roomData.users[exp.payerId]?.name} 先付</p>
+                  </div>
+                </div>
+                
+                <div className="text-right flex flex-col items-end gap-1.5">
+                  <p className="font-black text-[#4eb094] text-sm">${Number(exp.amount).toLocaleString()}</p>
+                  <div className="flex items-center gap-1.5">
+                    <button onClick={() => onEdit(exp)} className="p-1.5 text-gray-400 hover:text-[#88d8c0] bg-gray-50 hover:bg-[#e6f7f2] rounded-md transition-colors" title="編輯">
+                      <Pencil size={12} />
+                    </button>
+                    <button onClick={() => onDelete(exp.id)} className="p-1.5 text-gray-400 hover:text-red-400 bg-gray-50 hover:bg-red-50 rounded-md transition-colors" title="刪除">
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AddExpenseView({ roomData, currentUser, editingExpense, onCancel, onSave, showToast }) {
+  const usersArray = Object.values(roomData.users || {});
+  const [title, setTitle] = useState('');
+  const [amount, setAmount] = useState('');
+  const [payerId, setPayerId] = useState(currentUser.uid);
+  const [splitMode, setSplitMode] = useState('even');
+  const [involvedIds, setInvolvedIds] = useState([]); 
+
+  useEffect(() => {
+    if (editingExpense) {
+      setTitle(editingExpense.title || '');
+      setAmount(editingExpense.amount ? editingExpense.amount.toString() : '');
+      setPayerId(editingExpense.payerId || currentUser.uid);
+      setSplitMode(editingExpense.splitMode || 'even');
+      
+      if (editingExpense.involvedIds) {
+        setInvolvedIds(editingExpense.involvedIds);
+      } else {
+        setInvolvedIds(Object.keys(editingExpense.splits || {}));
+      }
+    } else {
+      setTitle('');
+      setAmount('');
+      setPayerId(currentUser.uid);
+      setSplitMode('even');
+      setInvolvedIds(Object.keys(roomData.users || {}));
+    }
+  }, [editingExpense?.id, roomData.users, currentUser.uid]);
+
+  const handleModeChange = (mode) => {
+    setSplitMode(mode);
+    if (mode === 'single_borrow') {
+      const others = usersArray.filter(u => u.uid !== payerId);
+      if (involvedIds.length !== 1) {
+        setInvolvedIds(others.length > 0 ? [others[0].uid] : [payerId]);
+      }
+    } else if (mode === 'even') {
+      setInvolvedIds(usersArray.map(u => u.uid));
+    }
+  };
+
+  const toggleInvolved = (uid) => {
+    if (splitMode === 'single_borrow') {
+      setInvolvedIds([uid]);
+    } else {
+      setInvolvedIds(prev => 
+        prev.includes(uid) ? prev.filter(id => id !== uid) : [...prev, uid]
+      );
+    }
+  };
+
+  const handleSave = async () => {
+    if (!title.trim() || !amount) return showToast("請完整填寫項目與金額", "error");
+    const numAmount = Number(amount);
+    if (involvedIds.length === 0) return showToast("請至少選擇一位分攤者", "error");
+    
+    let finalSplits = {};
+    if (splitMode === 'even') {
+      const splitAmount = Math.round((numAmount / involvedIds.length) * 100) / 100;
+      let totalAssigned = 0;
+      involvedIds.forEach((uid, index) => {
+        if (index === involvedIds.length - 1) finalSplits[uid] = numAmount - totalAssigned;
+        else { finalSplits[uid] = splitAmount; totalAssigned += splitAmount; }
+      });
+    } else if (splitMode === 'single_borrow') {
+      finalSplits[involvedIds[0]] = numAmount;
+    }
+
+    try {
+      const expenseData = {
+        title: title.trim(),
+        amount: numAmount,
+        payerId: payerId,
+        splits: finalSplits,
+        splitMode: splitMode,
+        involvedIds: involvedIds,
+        updatedAt: Date.now()
+      };
+
+      if (editingExpense) {
+        await updateDoc(doc(db, 'rooms', roomData.id, 'expenses', editingExpense.id), expenseData);
+        showToast("帳單已更新！💎");
+      } else {
+        expenseData.createdAt = Date.now();
+        await addDoc(collection(db, 'rooms', roomData.id, 'expenses'), expenseData);
+        showToast("新增成功！💎");
+      }
+      
+      onSave();
+    } catch (err) {
+      showToast("儲存失敗", "error");
+    }
+  };
+
+  return (
+    <div className="p-5 flex flex-col gap-5 animate-in slide-in-from-right-8 pb-32">
+      <div className="flex items-center"><button onClick={onCancel} className="p-1"><ChevronLeft size={24}/></button><h2 className="text-xl font-black ml-1">{editingExpense ? '編輯記帳' : '新增記帳'}</h2></div>
+      
+      <div className="bg-white p-6 rounded-[32px] shadow-sm space-y-6 flex-shrink-0">
+        <div className="space-y-1"><p className="text-[10px] font-black text-gray-300 uppercase tracking-widest">項目</p><input type="text" placeholder="買了什麼？" value={title} onChange={e => setTitle(e.target.value)} className="w-full text-lg font-bold border-b-2 border-gray-50 py-2 outline-none focus:border-[#88d8c0]" /></div>
+        <div className="space-y-1"><p className="text-[10px] font-black text-gray-300 uppercase tracking-widest">金額</p><div className="flex items-baseline"><span className="text-2xl font-black text-[#88d8c0] mr-2">$</span><input type="number" placeholder="0" value={amount} onChange={e => setAmount(e.target.value)} className="w-full text-4xl font-black text-[#4eb094] outline-none" /></div></div>
+      </div>
+
+      <div className="space-y-3">
+        <p className="text-xs font-black text-gray-400 uppercase px-1">誰先付錢的？</p>
+        <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
+          {usersArray.map(u => (
+            <button 
+              key={u.uid} 
+              onClick={() => setPayerId(u.uid)}
+              className={`flex items-center gap-2 px-4 py-2 rounded-full border-2 transition-all whitespace-nowrap ${payerId === u.uid ? 'border-[#88d8c0] bg-[#e6f7f2] text-[#4eb094] font-bold' : 'border-gray-100 bg-white text-gray-400'}`}
+            >
+              <span>{u.avatar}</span>
+              <span className="text-xs">{u.uid === currentUser.uid ? '我' : u.name}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="space-y-3 pt-2 border-t border-gray-100">
+        <p className="text-xs font-black text-gray-400 uppercase px-1">分攤方式</p>
+        <div className="grid grid-cols-2 gap-2 bg-gray-100 p-1 rounded-xl">
+          <button onClick={() => handleModeChange('even')} className={`py-2 text-xs font-bold rounded-lg transition-all ${splitMode === 'even' ? 'bg-white text-[#4eb094] shadow-sm' : 'text-gray-400'}`}>大家平分</button>
+          <button onClick={() => handleModeChange('single_borrow')} className={`py-2 text-xs font-bold rounded-lg transition-all ${splitMode === 'single_borrow' ? 'bg-white text-[#4eb094] shadow-sm' : 'text-gray-400'}`}>幫特定人付</button>
+        </div>
+      </div>
+
+      <div className="bg-gray-50 p-3 rounded-2xl border border-gray-100 mb-6">
+          <div className="space-y-1">
+              {usersArray.map(u => {
+                const isSelected = involvedIds.includes(u.uid);
+                return (
+                  <div 
+                    key={u.uid} 
+                    onClick={() => toggleInvolved(u.uid)}
+                    className={`flex items-center justify-between p-3 rounded-xl cursor-pointer transition-all ${isSelected ? 'bg-white border-2 border-[#88d8c0] shadow-sm' : 'bg-transparent border-2 border-transparent hover:bg-gray-100'}`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className="text-xl">{u.avatar}</span>
+                      <span className="font-medium text-sm text-gray-800">{u.name}</span>
+                    </div>
+                    <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors ${isSelected ? 'bg-[#88d8c0] border-[#88d8c0]' : 'border-gray-300'}`}>
+                      {isSelected && <CheckCircle2 size={14} className="text-white" />}
+                    </div>
+                  </div>
+                );
+              })}
+          </div>
+      </div>
+
+      <div className="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-md p-5 pb-8 bg-gradient-to-t from-[#f0f9f6] via-[#f0f9f6] to-transparent z-10 pointer-events-none flex flex-col justify-end">
+        <button onClick={handleSave} className="w-full py-4 bg-[#88d8c0] text-white rounded-2xl font-black text-base shadow-[0_6px_0_0_#5eb89e] active:translate-y-[6px] active:shadow-none transition-all pointer-events-auto">
+          {editingExpense ? '儲存修改' : '儲存紀錄'}
         </button>
       </div>
     </div>
   );
 }
 
-function WelcomeView({ profile, setProfile, onCreate, onJoin, loading }) {
-  const [joinId, setJoinId] = useState('');
-  return (
-    <div className="p-6 space-y-8 animate-in fade-in duration-500">
-      <div className="text-center space-y-2 mt-4">
-        <div className="inline-flex items-center justify-center w-24 h-24 rounded-full bg-white shadow-md text-5xl mb-4">{profile.avatar}</div>
-        <h2 className="text-2xl font-bold text-gray-800">準備好出發了嗎？</h2>
-      </div>
-      <div className="bg-white p-6 rounded-3xl shadow-sm space-y-6">
-        <input type="text" placeholder="輸入你的暱稱" value={profile.name} onChange={(e) => setProfile({ ...profile, name: e.target.value })} className="w-full px-4 py-3 rounded-xl bg-gray-50 border border-gray-200 focus:ring-2 focus:ring-[#88d8c0] outline-none" />
-        <div className="grid grid-cols-3 gap-3">
-          {AVATARS.map((av) => (
-            <button key={av.icon} onClick={() => setProfile({ ...profile, avatar: av.icon })} className={`py-3 text-2xl rounded-xl ${profile.avatar === av.icon ? 'bg-[#88d8c0] text-white shadow-md' : 'bg-gray-50'}`}>{av.icon}</button>
-          ))}
-        </div>
-      </div>
-      <div className="space-y-4">
-        <button onClick={onCreate} disabled={loading} className="w-full py-4 rounded-2xl font-bold text-white bg-[#88d8c0] shadow-[0_6px_0_0_#5eb89e] active:translate-y-1 active:shadow-none flex justify-center items-center gap-2"><Plus size={20} />🏡 建立新房間</button>
-        <div className="flex gap-2">
-          <input type="text" placeholder="房間代碼" value={joinId} onChange={(e) => setJoinId(e.target.value.toUpperCase())} className="flex-1 px-4 py-3 rounded-2xl border border-gray-200 text-center tracking-widest uppercase outline-none" />
-          <button onClick={() => onJoin(joinId)} disabled={loading} className="px-6 py-3 rounded-2xl font-bold text-[#4eb094] bg-[#e6f7f2]">加入</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function RoomDashboard({ roomId, roomData, expenses, onAdd, onSettle, currentUser, showToast }) {
-  const usersArray = Object.values(roomData.users || {});
-  const copyRoomId = () => { navigator.clipboard.writeText(roomId).then(() => showToast("房間代碼已複製！")); };
-  const myTotalPaid = expenses.filter(e => e.payerId === currentUser.uid).reduce((sum, e) => sum + Number(e.amount), 0);
-  return (
-    <div className="p-4 space-y-6">
-      <div className="bg-[#88d8c0] p-5 rounded-3xl text-white shadow-lg flex justify-between items-start">
-        <div><p className="text-teal-50 text-xs">房間代碼</p><div className="flex items-center gap-2"><span className="text-3xl font-black">{roomId}</span><button onClick={copyRoomId} className="p-1 bg-white/20 rounded-lg"><Copy size={16} /></button></div></div>
-        <div className="text-right"><p className="text-teal-50 text-xs">我付出的總額</p><p className="text-2xl font-bold">${myTotalPaid.toLocaleString()}</p></div>
-      </div>
-      <div className="grid grid-cols-2 gap-4">
-        <button onClick={onAdd} className="bg-white p-6 rounded-2xl shadow-sm flex flex-col items-center gap-2 active:scale-95 transition-all"><Plus size={32} className="text-[#4eb094]" /><b>記一筆</b></button>
-        <button onClick={onSettle} className="bg-white p-6 rounded-2xl shadow-sm flex flex-col items-center gap-2 active:scale-95 transition-all"><Calculator size={32} className="text-[#f48c71]" /><b>去結算</b></button>
-      </div>
-      <div className="space-y-3">
-        <h3 className="font-bold text-gray-700 flex items-center gap-2"><ArrowRightLeft size={18} />帳單明細</h3>
-        {expenses.map(exp => (
-          <div key={exp.id} className="bg-white p-4 rounded-2xl shadow-sm flex items-center justify-between border border-gray-50">
-            <div className="flex items-center gap-3"><div className="text-2xl">{roomData.users[exp.payerId]?.avatar}</div><div><p className="font-bold">{exp.title}</p><p className="text-xs text-gray-400">{roomData.users[exp.payerId]?.name} 先付</p></div></div>
-            <div className="text-right"><p className="font-bold text-[#4eb094]">${Number(exp.amount).toLocaleString()}</p></div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function AddExpenseView({ roomData, currentUser, onCancel, onSave, showToast }) {
-  const [title, setTitle] = useState('');
-  const [amount, setAmount] = useState('');
-  const [payerId, setPayerId] = useState(currentUser.uid);
-  const handleSave = async () => {
-    if (!title.trim() || !amount) return showToast("資料不全", "error");
-    const involvedIds = Object.keys(roomData.users);
-    const splitAmount = Math.round((Number(amount) / involvedIds.length) * 100) / 100;
-    const finalSplits = {};
-    involvedIds.forEach(uid => finalSplits[uid] = splitAmount);
-    await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'rooms', roomData.id, 'expenses'), {
-      title, amount: Number(amount), payerId, splits: finalSplits, createdAt: Date.now()
-    });
-    showToast("記帳成功！"); onSave();
-  };
-  return (
-    <div className="p-4 space-y-6 animate-in slide-in-from-right-4">
-      <div className="flex items-center"><button onClick={onCancel} className="p-2"><ChevronLeft size={24} /></button><h2 className="text-xl font-bold ml-2">新增記帳</h2></div>
-      <div className="bg-white p-6 rounded-3xl space-y-4 shadow-sm">
-        <input type="text" placeholder="買了什麼？" value={title} onChange={e => setTitle(e.target.value)} className="w-full text-xl font-bold border-b-2 border-gray-100 py-2 outline-none focus:border-[#88d8c0]" />
-        <input type="number" placeholder="金額" value={amount} onChange={e => setAmount(e.target.value)} className="w-full text-3xl font-black text-[#4eb094] outline-none" />
-      </div>
-      <button onClick={handleSave} className="w-full py-4 bg-[#88d8c0] text-white rounded-2xl font-bold shadow-lg">儲存紀錄</button>
-    </div>
-  );
-}
-
 function SettleUpView({ roomData, expenses, onBack, currentUser }) {
   const usersArray = Object.values(roomData.users || {});
+  
   const balances = useMemo(() => {
     const bal = {}; usersArray.forEach(u => bal[u.uid] = 0);
     expenses.forEach(exp => {
-      bal[exp.payerId] += Number(exp.amount);
-      Object.entries(exp.splits || {}).forEach(([uid, amount]) => { bal[uid] -= Number(amount); });
+      if (bal[exp.payerId] !== undefined) bal[exp.payerId] += Number(exp.amount);
+      Object.entries(exp.splits || {}).forEach(([uid, amt]) => { if (bal[uid] !== undefined) bal[uid] -= Number(amt); });
     });
     return bal;
   }, [expenses, usersArray]);
+
   const settlements = useMemo(() => {
     const debtors = [], creditors = [];
-    Object.entries(balances).forEach(([uid, amount]) => {
-      if (amount < -0.01) debtors.push({ uid, amount: Math.abs(amount) });
-      else if (amount > 0.01) creditors.push({ uid, amount });
+    Object.entries(balances).forEach(([uid, amt]) => {
+      if (amt < -1) debtors.push({ uid, amt: Math.abs(amt) });
+      else if (amt > 1) creditors.push({ uid, amt });
     });
-    const txs = []; let i = 0, j = 0;
-    while (i < debtors.length && j < creditors.length) {
-      const d = debtors[i], c = creditors[j];
-      const amt = Math.min(d.amount, c.amount);
-      txs.push({ from: d.uid, to: c.uid, amount: Math.round(amt) });
-      d.amount -= amt; c.amount -= amt;
-      if (d.amount < 0.01) i++; if (c.amount < 0.01) j++;
+    const txs = []; let i=0, j=0;
+    while(i < debtors.length && j < creditors.length) {
+      const amt = Math.min(debtors[i].amt, creditors[j].amt);
+      txs.push({ from: debtors[i].uid, to: creditors[j].uid, amount: Math.round(amt) });
+      debtors[i].amt -= amt; creditors[j].amt -= amt;
+      if (debtors[i].amt < 1) i++; if (creditors[j].amt < 1) j++;
     }
     return txs;
   }, [balances]);
-  const myBalance = balances[currentUser.uid] || 0;
+
+  const myBal = balances[currentUser.uid] || 0;
+
   return (
-    <div className="p-4 space-y-6">
-      <div className="flex items-center"><button onClick={onBack} className="p-2"><ChevronLeft size={24} /></button><h2 className="text-xl font-bold ml-2">結算帳務</h2></div>
-      <div className={`p-6 rounded-3xl text-white shadow-sm ${myBalance >= 0 ? 'bg-[#88d8c0]' : 'bg-[#f4a28c]'}`}>
-        <p className="opacity-80">我的結算狀態</p>
-        <div className="text-4xl font-black">{myBalance > 0 ? '+' : ''}{Math.round(myBalance)} 元</div>
-        <p className="text-sm mt-2">{myBalance > 0 ? '收錢囉！' : myBalance < 0 ? '記得還錢！' : '帳務平衡！'}</p>
+    <div className="p-5 space-y-6 animate-in slide-in-from-left-8 overflow-y-auto">
+      <div className="flex items-center"><button onClick={onBack} className="p-1"><ChevronLeft size={24}/></button><h2 className="text-xl font-black ml-1">結算帳務</h2></div>
+      
+      {/* 修正：優化結算狀態的文案 */}
+      <div className={`p-6 rounded-[32px] text-white shadow-lg ${myBal >= 0 ? 'bg-[#88d8c0]' : 'bg-[#f4a28c]'}`}>
+        <p className="text-[10px] uppercase opacity-70 tracking-widest">My Status</p>
+        <div className="text-3xl font-black mt-1">{myBal > 0 ? '+' : ''}{Math.round(myBal)} 元</div>
+        <p className="mt-3 font-bold bg-white/20 inline-block px-3 py-1 rounded-full text-[11px]">
+          {myBal > 0 ? '別人要給你 💎' : myBal < 0 ? '你要給別人 💸' : '互不相欠 ✨'}
+        </p>
       </div>
-      <div className="space-y-4">
-        <h3 className="font-bold text-gray-700 px-2">最佳還款方案</h3>
-        {settlements.map((s, idx) => (
-          <div key={idx} className="bg-white p-6 rounded-3xl shadow-sm border border-gray-50 flex items-center justify-between">
-            <div className="flex flex-col items-center flex-1">
-              <div className="text-3xl mb-1">{roomData.users[s.from]?.avatar}</div>
-              <div className="text-sm font-bold text-gray-600">{roomData.users[s.from]?.name}</div>
-            </div>
-            <div className="flex flex-col items-center px-4 flex-1">
-              <span className="text-[14px] font-bold text-[#88d8c0] mb-1 uppercase">應支付給</span>
-              <div className="flex items-center text-[#ff9a8b]">
-                <MoveRight size={24} strokeWidth={3} />
-                <span className="text-lg font-black ml-2">${s.amount.toLocaleString()}</span>
+
+      <div className="space-y-3 pb-6">
+        {settlements.length === 0 ? (
+          <div className="bg-white p-8 rounded-[28px] text-center text-gray-300 font-bold border-2 border-dashed border-gray-100 text-sm">結清囉！</div>
+        ) : (
+          settlements.map((s, idx) => (
+            <div key={idx} className="bg-white p-5 rounded-[24px] shadow-sm border border-gray-50 flex items-center justify-between">
+              <div className="flex flex-col items-center flex-1">
+                <div className="text-2xl mb-1">{roomData.users[s.from]?.avatar}</div>
+                <div className="text-[10px] font-bold text-gray-500 truncate w-16 text-center">{roomData.users[s.from]?.name}</div>
+              </div>
+              <div className="flex-1 flex flex-col items-center px-1">
+                 <span className="text-[9px] font-black text-[#88d8c0] uppercase mb-1 tracking-tighter">支付給</span>
+                 <div className="flex items-center text-[#ff9a8b] font-black"><MoveRight size={20}/><span className="ml-1.5 text-base">${s.amount}</span></div>
+              </div>
+              <div className="flex flex-col items-center flex-1">
+                <div className="text-2xl mb-1">{roomData.users[s.to]?.avatar}</div>
+                <div className="text-[10px] font-bold text-gray-800 truncate w-16 text-center">{roomData.users[s.to]?.name}</div>
               </div>
             </div>
-            <div className="flex flex-col items-center flex-1">
-              <div className="text-3xl mb-1">{roomData.users[s.to]?.avatar}</div>
-              <div className="text-sm font-bold text-gray-600">{roomData.users[s.to]?.name}</div>
-            </div>
-          </div>
-        ))}
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function LoginView({ onLogin }) {
+  return (
+    <div className="h-screen bg-[#f0f9f6] flex flex-col items-center justify-center p-6">
+      <div className="max-w-sm w-full bg-white p-10 rounded-[40px] shadow-2xl text-center space-y-8 animate-in zoom-in">
+        <div className="flex justify-center"><div className="w-20 h-20 bg-[#88d8c0] rounded-3xl flex items-center justify-center shadow-lg transform rotate-12"><Gem size={40} className="text-white -rotate-12" /></div></div>
+        <h1 className="text-3xl font-black text-gray-800">閃閃記帳</h1>
+        <button onClick={onLogin} className="w-full py-4 rounded-2xl font-bold text-gray-700 bg-white border-2 border-gray-100 flex justify-center items-center gap-3 shadow-[0_5px_0_0_#f3f4f6] active:translate-y-[5px] active:shadow-none transition-all text-sm">Google 帳號登入</button>
       </div>
     </div>
   );
